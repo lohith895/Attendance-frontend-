@@ -1,0 +1,228 @@
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+
+// Pages
+import Index from "./pages/Index";
+import Login from "./pages/Login";
+import StudentSignup from "./pages/StudentSignup";
+import Dashboard from "./pages/Dashboard";
+import Departments from "./pages/Departments";
+import Subjects from "./pages/Subjects";
+import Teachers from "./pages/Teachers";
+import Students from "./pages/Students";
+import RegisterStudent from "./pages/RegisterStudent";
+import FaceTraining from "./pages/FaceTraining";
+import BulkUpload from "./pages/BulkUpload";
+import Classes from "./pages/Classes";
+import TakeAttendance from "./pages/TakeAttendance";
+import Analytics from "./pages/Analytics";
+import Settings from "./pages/Settings";
+import StudentDashboard from "./pages/StudentDashboard";
+import NotFound from "./pages/NotFound";
+
+const queryClient = new QueryClient();
+
+// Protected Route wrapper
+function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: Array<"admin" | "teacher" | "student"> }) {
+  const { user, role, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // Role-based redirect: students go to student dashboard
+  if (allowedRoles && role && !allowedRoles.includes(role)) {
+    if (role === "student") {
+      return <Navigate to="/student-dashboard" replace />;
+    }
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+// Public Route wrapper (redirect to dashboard if already logged in)
+function PublicRoute({ children }: { children: React.ReactNode }) {
+  const { user, role, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (user) {
+    if (role === "student") {
+      return <Navigate to="/student-dashboard" replace />;
+    }
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      {/* Public routes */}
+      <Route path="/" element={<Index />} />
+      <Route
+        path="/login"
+        element={
+          <PublicRoute>
+            <Login />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/signup"
+        element={
+          <PublicRoute>
+            <StudentSignup />
+          </PublicRoute>
+        }
+      />
+
+      {/* Protected routes - Admin & Teacher only */}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute allowedRoles={["admin", "teacher"]}>
+            <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/departments"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <Departments />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/subjects"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <Subjects />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/teachers"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <Teachers />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/students"
+        element={
+          <ProtectedRoute allowedRoles={["admin", "teacher"]}>
+            <Students />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/register-student"
+        element={
+          <ProtectedRoute allowedRoles={["admin", "teacher"]}>
+            <RegisterStudent />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/face-training"
+        element={
+          <ProtectedRoute allowedRoles={["teacher"]}>
+            <FaceTraining />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/bulk-upload"
+        element={
+          <ProtectedRoute allowedRoles={["teacher"]}>
+            <BulkUpload />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/classes"
+        element={
+          <ProtectedRoute allowedRoles={["admin", "teacher"]}>
+            <Classes />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/attendance"
+        element={
+          <ProtectedRoute allowedRoles={["teacher"]}>
+            <TakeAttendance />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/analytics"
+        element={
+          <ProtectedRoute allowedRoles={["admin", "teacher"]}>
+            <Analytics />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <Settings />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Student only */}
+      <Route
+        path="/student-dashboard"
+        element={
+          <ProtectedRoute allowedRoles={["student"]}>
+            <StudentDashboard />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Catch-all */}
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  );
+}
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner />
+      <BrowserRouter>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </BrowserRouter>
+    </TooltipProvider>
+  </QueryClientProvider>
+);
+
+export default App;

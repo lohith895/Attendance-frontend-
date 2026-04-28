@@ -1,0 +1,13 @@
+project_id = "kuysucqllyqfgbnphnks"
+
+[functions.create-teacher]
+verify_jwt = false
+
+[functions.update-teacher]
+verify_jwt = false
+
+[functions.delete-teacher]
+verify_jwt = false
+
+[functions.register-student]
+verify_jwt = false

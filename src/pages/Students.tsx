@@ -1,0 +1,557 @@
+import { useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import { useAuth } from "@/contexts/AuthContext";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { supabase } from "@/integrations/supabase/client";
+import { useNavigate } from "react-router-dom";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  GraduationCap,
+  Search,
+  Plus,
+  Camera,
+  CameraOff,
+  MoreHorizontal,
+  Edit,
+  Trash2,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Loader2,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+interface Student {
+  id: string;
+  roll_number: string;
+  full_name: string;
+  email: string | null;
+  phone_number: string | null;
+  user_id: string | null;
+  face_registered: boolean;
+  section: {
+    name: string;
+    year: {
+      name: string;
+      department: {
+        name: string;
+        code: string;
+      };
+    };
+  };
+}
+
+interface EditForm {
+  full_name: string;
+  email: string;
+  phone_number: string;
+}
+
+export default function Students() {
+  const { user, role } = useAuth();
+  const navigate = useNavigate();
+  const [students, setStudents] = useState<Student[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("all");
+  const [loginDialogOpen, setLoginDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [creatingLogin, setCreatingLogin] = useState(false);
+  const [editForm, setEditForm] = useState<EditForm>({ full_name: "", email: "", phone_number: "" });
+  const [saving, setSaving] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    fetchDepartments();
+    fetchStudents();
+  }, []);
+
+  const fetchDepartments = async () => {
+    const { data } = await supabase.from("departments").select("*").order("name");
+    setDepartments(data || []);
+  };
+
+  const fetchStudents = async () => {
+    setLoading(true);
+    try {
+      let studentIds: string[] | null = null;
+
+      // If teacher, only show students mapped to their subjects
+      if (role === "teacher" && user) {
+        // Get teacher's subjects
+        const { data: teacherSubjects } = await supabase
+          .from("subjects")
+          .select("id")
+          .eq("teacher_id", user.id);
+
+        const subjectIds = (teacherSubjects || []).map(s => s.id);
+
+        if (subjectIds.length > 0) {
+          // Get student IDs mapped to these subjects
+          const { data: mappings } = await supabase
+            .from("student_subjects")
+            .select("student_id")
+            .in("subject_id", subjectIds);
+
+          studentIds = [...new Set((mappings || []).map(m => m.student_id))];
+        } else {
+          studentIds = [];
+        }
+      }
+
+      let query = supabase
+        .from("students")
+        .select(`
+          id,
+          roll_number,
+          full_name,
+          email,
+          phone_number,
+          user_id,
+          face_registered,
+          sections (
+            name,
+            years (
+              name,
+              departments (
+                name,
+                code
+              )
+            )
+          )
+        `)
+        .order("roll_number");
+
+      // Filter by mapped students for teachers
+      if (studentIds !== null) {
+        if (studentIds.length === 0) {
+          setStudents([]);
+          setLoading(false);
+          return;
+        }
+        query = query.in("id", studentIds);
+      }
+
+      const { data, error } = await query;
+
+      if (!error && data) {
+        const formattedStudents = data.map((s: any) => ({
+          id: s.id,
+          roll_number: s.roll_number,
+          full_name: s.full_name,
+          email: s.email,
+          phone_number: s.phone_number || null,
+          user_id: s.user_id || null,
+          face_registered: s.face_registered,
+          section: {
+            name: s.sections?.name || "N/A",
+            year: {
+              name: s.sections?.years?.name || "N/A",
+              department: {
+                name: s.sections?.years?.departments?.name || "N/A",
+                code: s.sections?.years?.departments?.code || "N/A",
+              },
+            },
+          },
+        }));
+        setStudents(formattedStudents);
+      }
+    } catch (err) {
+      console.error("Error fetching students:", err);
+    }
+    setLoading(false);
+  };
+
+  const filteredStudents = students.filter((student) => {
+    const matchesSearch =
+      student.full_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      student.roll_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      student.email?.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesDepartment =
+      selectedDepartment === "all" ||
+      student.section.year.department.name === departments.find(d => d.id === selectedDepartment)?.name;
+
+    return matchesSearch && matchesDepartment;
+  });
+
+  const getInitials = (name: string) => {
+    return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
+  };
+
+  const handleCreateLogin = async () => {
+    if (!selectedStudent || !loginPassword) return;
+    setCreatingLogin(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("create-student-account", {
+        body: { student_id: selectedStudent.id, password: loginPassword },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      toast({
+        title: "Login Created",
+        description: `Email: ${data.email} — share these credentials with the student.`,
+      });
+      setLoginDialogOpen(false);
+      setLoginPassword("");
+      setSelectedStudent(null);
+      fetchStudents();
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      setCreatingLogin(false);
+    }
+  };
+
+  const openEditDialog = (student: Student) => {
+    setSelectedStudent(student);
+    setEditForm({
+      full_name: student.full_name,
+      email: student.email || "",
+      phone_number: student.phone_number || "",
+    });
+    setEditDialogOpen(true);
+  };
+
+  const handleEditStudent = async () => {
+    if (!selectedStudent) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from("students")
+        .update({
+          full_name: editForm.full_name,
+          email: editForm.email || null,
+          phone_number: editForm.phone_number || null,
+        })
+        .eq("id", selectedStudent.id);
+      if (error) throw error;
+      toast({ title: "Student Updated", description: "Details saved successfully." });
+      setEditDialogOpen(false);
+      setSelectedStudent(null);
+      fetchStudents();
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteStudent = async (student: Student) => {
+    if (!confirm(`Delete ${student.full_name}? This cannot be undone.`)) return;
+    try {
+      const { error } = await supabase.from("students").delete().eq("id", student.id);
+      if (error) throw error;
+      toast({ title: "Student Deleted" });
+      fetchStudents();
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    }
+  };
+
+  return (
+    <DashboardLayout>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="space-y-6"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-display font-bold">Students</h1>
+            <p className="text-muted-foreground">
+              Manage registered students and their face data
+            </p>
+          </div>
+          <Button onClick={() => navigate("/register-student")} className="gap-2">
+            <Plus className="h-4 w-4" />
+            Register Student
+          </Button>
+        </div>
+
+        {/* Filters */}
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search students..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+                <SelectTrigger className="w-full sm:w-48">
+                  <SelectValue placeholder="All Departments" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Departments</SelectItem>
+                  {departments.map((dept) => (
+                    <SelectItem key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Students List */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <GraduationCap className="h-5 w-5" />
+              All Students
+            </CardTitle>
+            <CardDescription>
+              {filteredStudents.length} student(s) found
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+              </div>
+            ) : filteredStudents.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <GraduationCap className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                <p>No students found</p>
+                <p className="text-sm">
+                  {students.length === 0
+                    ? "Register your first student to get started"
+                    : "Try adjusting your search filters"}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Student</TableHead>
+                      <TableHead>Roll Number</TableHead>
+                      <TableHead>Department</TableHead>
+                      <TableHead>Year / Section</TableHead>
+                      <TableHead className="text-center">Face Registered</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredStudents.map((student) => (
+                      <TableRow key={student.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <Avatar className="h-9 w-9">
+                              <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                                {getInitials(student.full_name)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <p className="font-medium">{student.full_name}</p>
+                              {student.email && (
+                                <p className="text-sm text-muted-foreground">
+                                  {student.email}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {student.roll_number}
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5 text-sm">
+                            <span className="font-medium">
+                              {student.section.year.department.code}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {student.section.year.department.name}
+                            </span>
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {student.section.year.name} / Section {student.section.name}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {student.face_registered ? (
+                            <StatusBadge variant="safe" dot={false}>
+                              <Camera className="h-3.5 w-3.5" />
+                              Registered
+                            </StatusBadge>
+                          ) : (
+                            <StatusBadge variant="warning" dot={false}>
+                              <CameraOff className="h-3.5 w-3.5" />
+                              Pending
+                            </StatusBadge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {!student.user_id && (
+                                <DropdownMenuItem onClick={() => {
+                                  setSelectedStudent(student);
+                                  setLoginDialogOpen(true);
+                                }}>
+                                  <KeyRound className="mr-2 h-4 w-4" />
+                                  Create Login
+                                </DropdownMenuItem>
+                              )}
+                              {student.user_id && (
+                                <DropdownMenuItem disabled>
+                                  <KeyRound className="mr-2 h-4 w-4 text-muted-foreground" />
+                                  <span className="text-muted-foreground">Login Active</span>
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem onClick={() => openEditDialog(student)}>
+                                <Edit className="mr-2 h-4 w-4" />
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-destructive" onClick={() => handleDeleteStudent(student)}>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Edit Student Dialog */}
+        <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Student</DialogTitle>
+              <DialogDescription>
+                Update details for <strong>{selectedStudent?.full_name}</strong>
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-name">Full Name</Label>
+                <Input
+                  id="edit-name"
+                  value={editForm.full_name}
+                  onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-email">Email</Label>
+                <Input
+                  id="edit-email"
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-phone">WhatsApp Number</Label>
+                <Input
+                  id="edit-phone"
+                  type="tel"
+                  placeholder="919876543210"
+                  value={editForm.phone_number}
+                  onChange={(e) => setEditForm({ ...editForm, phone_number: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">Include country code (e.g. 91 for India). Used for WhatsApp alerts.</p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleEditStudent} disabled={saving || !editForm.full_name.trim()}>
+                {saving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</> : "Save Changes"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        {/* Create Login Dialog */}
+        <Dialog open={loginDialogOpen} onOpenChange={(open) => {
+          setLoginDialogOpen(open);
+          if (!open) { setLoginPassword(""); setSelectedStudent(null); }
+        }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create Student Login</DialogTitle>
+              <DialogDescription>
+                Create a login account for <strong>{selectedStudent?.full_name}</strong> ({selectedStudent?.roll_number}).
+                The email will be generated as <strong>{selectedStudent?.roll_number?.toLowerCase()}@attendance.edu</strong>.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="login-password">Password</Label>
+                <div className="relative">
+                  <Input
+                    id="login-password"
+                    type={showLoginPassword ? "text" : "password"}
+                    placeholder="Minimum 6 characters"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword(!showLoginPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setLoginDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleCreateLogin} disabled={creatingLogin || loginPassword.length < 6}>
+                {creatingLogin ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Creating...</> : "Create Login"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </motion.div>
+    </DashboardLayout>
+  );
+}
