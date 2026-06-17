@@ -115,10 +115,19 @@ Deno.serve(async (req) => {
     });
 
     // Link student record to auth user
-    await supabase
+    const { error: linkError } = await supabase
       .from("students")
       .update({ user_id: newUserId, email: studentEmail })
       .eq("id", student_id);
+
+    if (linkError) {
+      // Roll back the auth user so retrying doesn't hit "email already registered"
+      await supabase.auth.admin.deleteUser(newUserId);
+      return new Response(
+        JSON.stringify({ error: linkError.message }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     return new Response(
       JSON.stringify({

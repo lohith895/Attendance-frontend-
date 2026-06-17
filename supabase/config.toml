@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.register-student]
 verify_jwt = false
+
+[functions.create-student-account]
+verify_jwt = true

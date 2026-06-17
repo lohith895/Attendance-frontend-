@@ -12,12 +12,14 @@ import {
   trainSectionModel,
   getModelStatus,
   checkApiHealth,
+  recognizeCrops,
   FaceTrainingRequest,
   FaceTrainingResponse,
   BulkTrainingRequest,
   BulkTrainingResponse,
   FaceRecognitionRequest,
   FaceRecognitionResponse,
+  FaceRecognitionCropsRequest,
   TrainModelResponse,
   ModelStatusResponse,
 } from "@/services/faceRecognitionApi";
@@ -34,6 +36,7 @@ interface UseFaceApiReturn {
   
   // Recognition
   recognize: (data: FaceRecognitionRequest) => Promise<FaceRecognitionResponse | null>;
+  recognizeCrops: (data: FaceRecognitionCropsRequest) => Promise<FaceRecognitionResponse | null>;
   
   // Model status
   modelStatus: ModelStatusResponse | null;
@@ -141,6 +144,24 @@ export function useFaceApi(): UseFaceApiReturn {
     }
   }, [toast]);
 
+  // Recognize crops
+  const recognizeCropsCall = useCallback(async (data: FaceRecognitionCropsRequest): Promise<FaceRecognitionResponse | null> => {
+    setIsRecognizing(true);
+    try {
+      const result = await recognizeCrops(data);
+      return result;
+    } catch (error: any) {
+      toast({
+        title: "Recognition Error",
+        description: error.message || "Failed to recognize cropped faces",
+        variant: "destructive",
+      });
+      return null;
+    } finally {
+      setIsRecognizing(false);
+    }
+  }, [toast]);
+
   // Train section model
   const trainModel = useCallback(async (sectionId: string): Promise<TrainModelResponse | null> => {
     setIsTrainingModel(true);
@@ -192,6 +213,7 @@ export function useFaceApi(): UseFaceApiReturn {
     trainBulk,
     trainModel,
     recognize,
+    recognizeCrops: recognizeCropsCall,
     modelStatus,
     fetchModelStatus,
     isTraining,

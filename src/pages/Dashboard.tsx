@@ -6,8 +6,14 @@ import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
+import { cn } from "@/lib/utils";
+import {
+  getNotifications,
+  AppNotification,
+} from "@/services/notificationService";
 import {
   Users,
   GraduationCap,
@@ -18,6 +24,8 @@ import {
   CheckCircle2,
   Clock,
   ArrowRight,
+  Send,
+  Mail,
 } from "lucide-react";
 
 interface DashboardStats {
@@ -42,6 +50,26 @@ export default function Dashboard() {
   });
   const [todaysClasses, setTodaysClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [alerts, setAlerts] = useState<AppNotification[]>([]);
+
+  const fetchAlerts = () => {
+    const all = getNotifications();
+    // Show parent SMS and student email alerts
+    setAlerts(all.filter(n => n.type === "sms" || n.type === "email" || n.type === "warning"));
+  };
+
+  useEffect(() => {
+    fetchAlerts();
+    
+    const handleNewNotif = () => {
+      fetchAlerts();
+    };
+    
+    window.addEventListener("new_notification", handleNewNotif);
+    return () => {
+      window.removeEventListener("new_notification", handleNewNotif);
+    };
+  }, []);
 
   useEffect(() => {
     fetchDashboardData();
@@ -317,6 +345,81 @@ export default function Dashboard() {
             </Card>
           </motion.div>
         </div>
+
+        {/* Real-Time Alerts Log */}
+        {role !== "student" && (
+          <motion.div variants={itemVariants}>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Send className="h-5 w-5 text-accent animate-pulse" />
+                    Real-Time Parent & Student Alerts Log
+                  </CardTitle>
+                  <CardDescription>
+                    Live logs of automated notifications sent to parents (SMS) and students (Email) upon attendance marking.
+                  </CardDescription>
+                </div>
+                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping" />
+                  SMS Gateway Live
+                </Badge>
+              </CardHeader>
+              <CardContent>
+                {alerts.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Send className="h-12 w-12 mx-auto mb-3 opacity-30" />
+                    <p>No alerts triggered yet today</p>
+                    <p className="text-xs mt-1">Mark student absence during roll call to trigger parent alerts.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-60 overflow-y-auto">
+                    {alerts.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg border border-border/60 bg-secondary/20 hover:bg-secondary/40 transition-colors gap-2"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className={cn(
+                            "h-9 w-9 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5",
+                            alert.type === "sms" && "bg-blue-500/10 text-blue-600",
+                            alert.type === "email" && "bg-purple-500/10 text-purple-600",
+                            alert.type === "warning" && "bg-yellow-500/10 text-yellow-600"
+                          )}>
+                            {alert.type === "sms" ? (
+                              <Send className="h-4.5 w-4.5" />
+                            ) : alert.type === "email" ? (
+                              <Mail className="h-4.5 w-4.5" />
+                            ) : (
+                              <AlertTriangle className="h-4.5 w-4.5" />
+                            )}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-sm">{alert.title}</span>
+                              <span className="text-xs text-muted-foreground">to {alert.recipientName} ({alert.contactInfo})</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-0.5 font-sans leading-relaxed">
+                              {alert.message}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                            {new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                          <Badge className="bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/15 border-0 text-[10px] font-bold">
+                            Delivered
+                          </Badge>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
 
         {/* Attendance Overview */}
         <motion.div variants={itemVariants}>

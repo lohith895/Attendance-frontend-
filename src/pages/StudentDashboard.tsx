@@ -6,7 +6,13 @@ import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
+import {
+  getNotifications,
+  AppNotification,
+} from "@/services/notificationService";
 import {
   Table,
   TableBody,
@@ -36,6 +42,9 @@ import {
   Calendar,
   Clock,
   Activity,
+  Bell,
+  Mail,
+  Send,
 } from "lucide-react";
 import { SubjectMapping } from "@/components/student/SubjectMapping";
 
@@ -81,28 +90,89 @@ export default function StudentDashboard() {
     missed: 0,
     percentage: 0,
   });
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const fetchStudentNotifications = (email?: string, studentId?: string) => {
+    const all = getNotifications();
+    const filtered = all.filter(
+      (n) =>
+        n.recipient === "student" &&
+        (n.userId === user?.id ||
+          (email && n.contactInfo?.toLowerCase() === email.toLowerCase()) ||
+          (studentId && n.studentId === studentId))
+    );
+    setNotifications(filtered);
+  };
+
+  useEffect(() => {
+    if (studentData) {
+      fetchStudentNotifications(studentData.email || undefined, studentData.id);
+    }
+  }, [studentData]);
+
+  useEffect(() => {
+    const handleNewNotif = () => {
+      if (studentData) {
+        fetchStudentNotifications(studentData.email || undefined, studentData.id);
+      }
+    };
+    window.addEventListener("new_notification", handleNewNotif);
+    return () => {
+      window.removeEventListener("new_notification", handleNewNotif);
+    };
+  }, [studentData]);
 
   useEffect(() => {
     if (user) fetchStudentData();
   }, [user]);
 
+  const studentSelectQuery = `
+    id, full_name, roll_number, email, phone_number,
+    sections (
+      name,
+      years (
+        name,
+        departments (name, code)
+      )
+    )
+  `;
+
   const fetchStudentData = async () => {
     try {
-      // Get student record linked to this auth user
-      const { data: student } = await supabase
+      // Primary lookup: by linked user_id
+      let { data: student } = await supabase
         .from("students")
-        .select(`
-          id, full_name, roll_number, email, phone_number,
-          sections (
-            name,
-            years (
-              name,
-              departments (name, code)
-            )
-          )
-        `)
+        .select(studentSelectQuery)
         .eq("user_id", user!.id)
         .maybeSingle();
+
+      if (!student && user!.email) {
+        // Fallback: auth user exists but edge function failed to link user_id to the
+        // student record. Try finding the record by the generated email
+        // (roll_number@attendance.edu) and auto-repair the link.
+        const { data: byEmail } = await supabase
+          .from("students")
+          .select("id, email")
+          .eq("email", user!.email)
+          .is("user_id", null)
+          .maybeSingle();
+
+        if (byEmail) {
+          await supabase
+            .from("students")
+            .update({ user_id: user!.id })
+            .eq("id", byEmail.id);
+
+          // Re-fetch with full joins after linking
+          const { data: fixed } = await supabase
+            .from("students")
+            .select(studentSelectQuery)
+            .eq("user_id", user!.id)
+            .maybeSingle();
+
+          student = fixed;
+        }
+      }
 
       if (!student) {
         setLoading(false);
@@ -200,7 +270,15 @@ export default function StudentDashboard() {
         <div className="text-center py-20 text-muted-foreground">
           <GraduationCap className="h-16 w-16 mx-auto mb-4 opacity-50" />
           <h2 className="text-xl font-semibold mb-2">No Student Record Found</h2>
-          <p>Your account is not linked to any student record. Please contact your teacher.</p>
+          <p className="mb-2">Your login account is not linked to any student record.</p>
+          {user?.email && (
+            <p className="text-sm mb-4">
+              You are logged in as <span className="font-mono font-medium text-foreground">{user.email}</span>
+            </p>
+          )}
+          <p className="text-sm">Please ask your teacher to link your account, or try
+            {" "}<button className="underline text-primary" onClick={fetchStudentData}>refreshing</button>.
+          </p>
         </div>
       </DashboardLayout>
     );
@@ -219,6 +297,86 @@ export default function StudentDashboard() {
           </p>
         </motion.div>
 
+        {/* Critical Low Attendance Banner */}
+        {overallStats.percentage < 75 && overallStats.totalClasses > 0 && (
+          <motion.div variants={itemVariants} className="p-4 rounded-xl border border-destructive/30 bg-destructive/10 text-destructive flex items-start gap-3 shadow-lg shadow-destructive/5">
+            <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-sm sm:text-base">Critical Attendance Status Alert</p>
+              <p className="text-xs sm:text-sm text-destructive/95 mt-0.5 leading-relaxed">
+                Your overall attendance is currently <strong className="font-bold">{overallStats.percentage}%</strong>, which is below the required <strong className="font-bold">75%</strong> threshold. Please attend upcoming classes to avoid academic eligibility restrictions.
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Notifications and Alerts Card */}
+        <motion.div variants={itemVariants}>
+          <Card className="border border-border/80 shadow-md">
+            <CardHeader className="pb-3 flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Bell className="h-5 w-5 text-accent" />
+                  My Alerts & Notifications
+                </CardTitle>
+                <CardDescription>
+                  Recent real-time attendance alerts and academic warnings.
+                </CardDescription>
+              </div>
+              {notifications.filter(n => !n.read).length > 0 && (
+                <Badge className="bg-accent text-accent-foreground text-[10px] sm:text-xs">
+                  {notifications.filter(n => !n.read).length} Unread
+                </Badge>
+              )}
+            </CardHeader>
+            <CardContent>
+              {notifications.length === 0 ? (
+                <div className="text-center py-6 text-muted-foreground text-sm">
+                  <Bell className="h-10 w-10 mx-auto mb-2 opacity-30" />
+                  <p>No recent alerts or warnings</p>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+                  {notifications.map((notif) => (
+                    <div
+                      key={notif.id}
+                      className={cn(
+                        "p-3 rounded-lg border text-left transition-colors flex items-start gap-3",
+                        !notif.read ? "border-accent/30 bg-accent/5" : "border-border/50 bg-secondary/10"
+                      )}
+                    >
+                      <div className={cn(
+                        "h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5",
+                        notif.type === "warning" && "bg-yellow-500/10 text-yellow-600",
+                        notif.type === "attendance" && "bg-green-500/10 text-green-600"
+                      )}>
+                        {notif.type === "warning" ? (
+                          <AlertTriangle className="h-4 w-4" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className={cn("text-xs font-semibold", !notif.read ? "text-foreground font-bold" : "text-muted-foreground")}>
+                            {notif.title}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {new Date(notif.timestamp).toLocaleDateString()} at {new Date(notif.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed break-words">
+                          {notif.message}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Stats Cards */}
         <motion.div variants={itemVariants} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard title="Total Classes" value={overallStats.totalClasses} icon={Calendar} variant="default" />
@@ -235,6 +393,85 @@ export default function StudentDashboard() {
         {/* Subject Mapping */}
         <motion.div variants={itemVariants}>
           <SubjectMapping />
+        </motion.div>
+
+        {/* Attendance Predictor & Projections */}
+        <motion.div variants={itemVariants}>
+          <Card className="border border-border/80 shadow-md bg-gradient-to-br from-card to-secondary/10 overflow-hidden">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-indigo-500 animate-pulse" />
+                Attendance Predictor & Projections
+              </CardTitle>
+              <CardDescription>
+                Smart predictive analytics to forecast your eligibility status at semester end.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-6 md:grid-cols-3">
+                {/* Status Indicator */}
+                <div className="flex flex-col justify-center items-center p-4 rounded-xl bg-background/40 border border-border/50 text-center">
+                  <span className="text-sm text-muted-foreground">Current Standing</span>
+                  <span className={cn(
+                    "text-4xl font-display font-extrabold mt-1 tracking-tight",
+                    overallStats.percentage >= 80 ? "text-green-500" : overallStats.percentage >= 75 ? "text-amber-500" : "text-destructive"
+                  )}>
+                    {overallStats.percentage}%
+                  </span>
+                  <Badge className={cn(
+                    "mt-2 font-semibold",
+                    overallStats.percentage >= 80 ? "bg-green-500/10 text-green-500 hover:bg-green-500/20" : 
+                    overallStats.percentage >= 75 ? "bg-amber-500/10 text-amber-500 hover:bg-amber-500/20" : 
+                    "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                  )}>
+                    {overallStats.percentage >= 80 ? "Safe Zone" : overallStats.percentage >= 75 ? "Warning Zone" : "Critical Ineligible"}
+                  </Badge>
+                </div>
+
+                {/* Projections */}
+                <div className="space-y-4 col-span-2">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="p-3 rounded-lg border border-border/50 bg-background/25">
+                      <div className="text-xs text-muted-foreground">Best Case Projection</div>
+                      <div className="text-xl font-bold mt-1 text-foreground">
+                        {Math.round(((overallStats.attended + 15) / (overallStats.totalClasses + 15)) * 100)}%
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">Assumes attending next 15 scheduled classes</div>
+                    </div>
+                    <div className="p-3 rounded-lg border border-border/50 bg-background/25">
+                      <div className="text-xs text-muted-foreground">Maintain Pace</div>
+                      <div className="text-xl font-bold mt-1 text-foreground">{overallStats.percentage}%</div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">Assumes matching present overall rate</div>
+                    </div>
+                  </div>
+
+                  {/* Early Warning Message & Action */}
+                  <div className={cn(
+                    "p-4 rounded-lg border text-sm leading-relaxed",
+                    overallStats.percentage >= 75 
+                      ? "border-green-500/20 bg-green-500/5 text-muted-foreground"
+                      : "border-destructive/20 bg-destructive/5 text-muted-foreground"
+                  )}>
+                    {overallStats.percentage < 75 ? (
+                      <div>
+                        <span className="font-semibold text-destructive flex items-center gap-1.5 mb-1">
+                          <AlertTriangle className="h-4 w-4" /> Action Required
+                        </span>
+                        You must attend at least <strong className="text-foreground font-bold">{Math.max(0, Math.ceil(3 * overallStats.totalClasses - 4 * overallStats.attended))} consecutive classes</strong> without absence to recover your overall attendance to the <strong className="text-foreground font-bold">75%</strong> threshold.
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="font-semibold text-green-500 flex items-center gap-1.5 mb-1">
+                          <CheckCircle2 className="h-4 w-4" /> Safe Standing
+                        </span>
+                        You are in good academic standing. You can afford to miss up to <strong className="text-foreground font-bold">{Math.max(0, Math.floor((4 * overallStats.attended) / 3 - overallStats.totalClasses))} classes</strong> before falling below the 75% eligibility mark.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </motion.div>
 
         {/* Charts Row */}

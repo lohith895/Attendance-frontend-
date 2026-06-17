@@ -147,7 +147,16 @@ export default function StudentSignup() {
         },
       });
 
-      if (fnErr) throw fnErr;
+      if (fnErr) {
+        // FunctionsHttpError hides the real body behind a generic message.
+        // The raw Response is on fnErr.context — read it once to surface the real error.
+        let errorMessage = fnErr.message;
+        try {
+          const body = await (fnErr as any).context?.json?.();
+          if (body?.error) errorMessage = body.error;
+        } catch { /* ignore parse failures */ }
+        throw new Error(errorMessage);
+      }
       if (result?.error) throw new Error(result.error);
 
       const studentId = result.student_id;

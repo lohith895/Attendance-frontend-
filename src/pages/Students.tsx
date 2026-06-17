@@ -218,7 +218,14 @@ export default function Students() {
       const { data, error } = await supabase.functions.invoke("create-student-account", {
         body: { student_id: selectedStudent.id, password: loginPassword },
       });
-      if (error) throw error;
+      if (error) {
+        let errorMessage = error.message;
+        try {
+          const body = await (error as any).context?.json?.();
+          if (body?.error) errorMessage = body.error;
+        } catch { /* ignore parse failures */ }
+        throw new Error(errorMessage);
+      }
       if (data?.error) throw new Error(data.error);
       toast({
         title: "Login Created",

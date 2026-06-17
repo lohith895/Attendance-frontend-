@@ -85,6 +85,7 @@ export interface UnrecognizedFace {
     height: number;
   };
   message: string;
+  spoof?: boolean;
 }
 
 export interface FaceRecognitionRequest {
@@ -256,4 +257,70 @@ export async function checkApiHealth(): Promise<boolean> {
  */
 export function getApiBaseUrl(): string {
   return BASE_URL;
+}
+
+export interface FaceRecognitionCropItem {
+  image: string; // Base64 JPEG crop
+  bounding_box: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+export interface FaceRecognitionCropsRequest {
+  class_id: string;
+  section_id: string;
+  crops: FaceRecognitionCropItem[];
+  timestamp: string;
+}
+
+/**
+ * Recognize pre-cropped faces in a camera frame
+ * 
+ * @param data - Class ID, section ID, and list of cropped face base64 strings
+ * @returns Recognized and unrecognized faces
+ */
+export async function recognizeCrops(data: FaceRecognitionCropsRequest): Promise<FaceRecognitionResponse> {
+  const headers = await getAuthHeaders();
+  
+  const response = await fetch(`${BASE_URL}/api/face-recognition/crops`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(data),
+  });
+  
+  return handleResponse<FaceRecognitionResponse>(response);
+}
+
+export interface WhatsappAlertRequest {
+  teacher_phone: string;
+  parent_phone: string;
+  student_name: string;
+  subject_name: string;
+  subject_code: string;
+}
+
+export interface WhatsappAlertResponse {
+  success: boolean;
+  sid?: string;
+  mode: "live" | "simulated";
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Dispatch real or simulated WhatsApp alerts to parents via FastAPI backend
+ */
+export async function sendWhatsappAlert(data: WhatsappAlertRequest): Promise<WhatsappAlertResponse> {
+  const headers = await getAuthHeaders();
+  
+  const response = await fetch(`${BASE_URL}/api/alerts/whatsapp`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(data),
+  });
+  
+  return handleResponse<WhatsappAlertResponse>(response);
 }

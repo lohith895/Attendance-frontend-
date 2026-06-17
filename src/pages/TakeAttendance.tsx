@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useFaceApi } from "@/hooks/useFaceApi";
+import { triggerAttendanceAlerts } from "@/services/notificationService";
 import {
   Camera,
   CameraOff,
@@ -35,6 +36,20 @@ interface DetectedStudent {
   isManual?: boolean;
 }
 
+interface OverlayFace {
+  id: string;
+  name: string;
+  rollNumber?: string;
+  status: "present" | "absent" | "late" | "unknown" | "spoof";
+  boundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  confidence: number;
+}
+
 interface ClassInfo {
   id: string;
   subject_name: string;
@@ -51,13 +66,40 @@ export default function TakeAttendance() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const recognitionInFlightRef = useRef(false);
+  const frameCountRef = useRef(0);
   
   const {
     isApiAvailable,
     checkingApi,
     recognize,
+    recognizeCrops,
     isRecognizing: apiRecognizing,
   } = useFaceApi();
+
+  const cropFaceFromFullFrame = useCallback((
+    fullFrameCanvas: HTMLCanvasElement,
+    box: { x: number; y: number; width: number; height: number }
+  ): string | null => {
+    const cropCanvas = document.createElement("canvas");
+    const context = cropCanvas.getContext("2d");
+    if (!context) return null;
+
+    const padW = Math.round(box.width * 0.1);
+    const padH = Math.round(box.height * 0.1);
+
+    const x = Math.max(0, box.x - padW);
+    const y = Math.max(0, box.y - padH);
+    const w = Math.min(fullFrameCanvas.width - x, box.width + padW * 2);
+    const h = Math.min(fullFrameCanvas.height - y, box.height + padH * 2);
+
+    if (w <= 0 || h <= 0) return null;
+
+    cropCanvas.width = w;
+    cropCanvas.height = h;
+
+    context.drawImage(fullFrameCanvas, x, y, w, h, 0, 0, w, h);
+    return cropCanvas.toDataURL("image/jpeg", 0.9);
+  }, []);
   
   const [selectedClass, setSelectedClass] = useState<string>("");
   const [todaysClasses, setTodaysClasses] = useState<ClassInfo[]>([]);
@@ -75,6 +117,9 @@ export default function TakeAttendance() {
     error?: string;
     at?: string;
   } | null>(null);
+
+  const [overlayFaces, setOverlayFaces] = useState<OverlayFace[]>([]);
+  const [frameDimensions, setFrameDimensions] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     fetchTodaysClasses();
@@ -224,9 +269,11 @@ export default function TakeAttendance() {
     setStream(null);
     setIsCameraActive(false);
     setIsRecognizing(false);
+    setOverlayFaces([]);
+    setFrameDimensions(null);
   };
 
-  const captureFrameBase64 = useCallback(async (): Promise<string | null> => {
+  const captureFrameBase64 = useCallback(async (): Promise<{ dataUrl: string; width: number; height: number } | null> => {
     if (!videoRef.current || !canvasRef.current) {
       console.log("captureFrame: refs not ready", {
         video: !!videoRef.current,
@@ -269,7 +316,7 @@ export default function TakeAttendance() {
     });
 
     console.log("captureFrame: captured frame", { width: canvas.width, height: canvas.height });
-    return dataUrl;
+    return { dataUrl, width: targetW, height: targetH };
   }, []);
 
   const performRecognition = useCallback(async () => {
@@ -279,22 +326,59 @@ export default function TakeAttendance() {
 
     recognitionInFlightRef.current = true;
     try {
-      const frameData = await captureFrameBase64();
-      if (!frameData) return;
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas) return;
 
-      const result = await recognize({
-        class_id: selectedClass,
-        section_id: selectedClassInfo.section_id,
-        image: frameData,
-        timestamp: new Date().toISOString(),
-      });
+      const frameResult = await captureFrameBase64();
+      if (!frameResult) return;
+      const { dataUrl: frameData, width: frameW, height: frameH } = frameResult;
+      
+      setFrameDimensions({ width: frameW, height: frameH });
+
+      frameCountRef.current += 1;
+      const canDoCrops = overlayFaces.length > 0 && (frameCountRef.current % 4 !== 0);
+
+      let result = null;
+
+      if (canDoCrops) {
+        const cropsList: any[] = [];
+        overlayFaces.forEach((face) => {
+          // Crop each tracked face from the captured frame canvas
+          const faceCropUrl = cropFaceFromFullFrame(canvas, face.boundingBox);
+          if (faceCropUrl) {
+            cropsList.push({
+              image: faceCropUrl,
+              bounding_box: face.boundingBox
+            });
+          }
+        });
+
+        if (cropsList.length > 0) {
+          result = await recognizeCrops({
+            class_id: selectedClass,
+            section_id: selectedClassInfo.section_id,
+            crops: cropsList,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (!result) {
+        result = await recognize({
+          class_id: selectedClass,
+          section_id: selectedClassInfo.section_id,
+          image: frameData,
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       // Log payload to confirm correct base64 format for debugging backend.
       console.log("Recognition payload:", {
         class_id: selectedClass,
         section_id: selectedClassInfo.section_id,
-        imagePrefix: frameData.slice(0, 50) + "...",
-        imageLength: frameData.length,
+        mode: canDoCrops ? "crops" : "full_frame",
+        cropsCount: canDoCrops ? overlayFaces.length : 0,
       });
 
       // Always record the latest backend response stats for debugging.
@@ -306,33 +390,71 @@ export default function TakeAttendance() {
         at: new Date().toLocaleTimeString(),
       });
 
-      if (result?.success && result.recognized.length > 0) {
-        // Add newly recognized students (avoid duplicates)
-        setDetectedStudents(prev => {
-          const newStudents = [...prev];
-          for (const face of result.recognized) {
-            if (!newStudents.find(s => s.id === face.student_id)) {
-              newStudents.push({
-                id: face.student_id,
-                rollNumber: face.roll_number,
-                fullName: face.student_name,
-                confidence: face.confidence,
-                status: "present",
-              });
-            }
-          }
-          return newStudents;
-        });
+      if (result?.success) {
+        const faces: OverlayFace[] = [];
 
-        toast({
-          title: "Faces Recognized",
-          description: `${result.recognized.length} new student(s) detected`,
-        });
+        // 1. Process recognized faces
+        if (Array.isArray(result.recognized)) {
+          for (const face of result.recognized) {
+            faces.push({
+              id: face.student_id,
+              name: face.student_name,
+              rollNumber: face.roll_number,
+              status: "present",
+              boundingBox: face.bounding_box,
+              confidence: face.confidence,
+            });
+          }
+        }
+
+        // 2. Process unrecognized faces
+        if (Array.isArray(result.unrecognized)) {
+          result.unrecognized.forEach((face, index) => {
+            faces.push({
+              id: `unrecognized-${index}`,
+              name: face.spoof ? "SPOOF DETECTED" : "Unknown",
+              status: face.spoof ? ("spoof" as const) : ("unknown" as const),
+              boundingBox: face.bounding_box,
+              confidence: 0,
+            });
+          });
+        }
+
+        setOverlayFaces(faces);
+
+        if (result.recognized.length > 0) {
+          // Add newly recognized students (avoid duplicates)
+          setDetectedStudents(prev => {
+            const newStudents = [...prev];
+            for (const face of result.recognized) {
+              if (!newStudents.find(s => s.id === face.student_id)) {
+                newStudents.push({
+                  id: face.student_id,
+                  rollNumber: face.roll_number,
+                  fullName: face.student_name,
+                  confidence: face.confidence,
+                  status: "present",
+                });
+              }
+            }
+            return newStudents;
+          });
+
+          toast({
+            title: "Faces Recognized",
+            description: `${result.recognized.length} new student(s) detected`,
+          });
+        }
+      } else {
+        setOverlayFaces([]);
       }
+    } catch (error) {
+      setOverlayFaces([]);
+      throw error;
     } finally {
       recognitionInFlightRef.current = false;
     }
-  }, [selectedClass, todaysClasses, captureFrameBase64, recognize, toast]);
+  }, [selectedClass, todaysClasses, captureFrameBase64, recognize, recognizeCrops, overlayFaces, toast]);
 
   const startRecognition = async () => {
     // Ensure video is fully ready before starting
@@ -386,10 +508,47 @@ export default function TakeAttendance() {
     }
     recognitionInFlightRef.current = false;
     setIsRecognizing(false);
+    setOverlayFaces([]);
+    setFrameDimensions(null);
     toast({
       title: "Recognition Stopped",
       description: "Face recognition paused",
     });
+  };
+
+  const getBoundingBoxStyles = (box: { x: number; y: number; width: number; height: number }) => {
+    const video = videoRef.current;
+    if (!video || !frameDimensions) return null;
+
+    const clientWidth = video.clientWidth;
+    const clientHeight = video.clientHeight;
+    const streamWidth = frameDimensions.width;
+    const streamHeight = frameDimensions.height;
+
+    if (streamWidth === 0 || streamHeight === 0 || clientWidth === 0 || clientHeight === 0) {
+      return null;
+    }
+
+    // Calculate scaling and offset based on object-cover styling
+    const scale = Math.max(clientWidth / streamWidth, clientHeight / streamHeight);
+    const renderedWidth = streamWidth * scale;
+    const renderedHeight = streamHeight * scale;
+
+    const offsetX = (renderedWidth - clientWidth) / 2;
+    const offsetY = (renderedHeight - clientHeight) / 2;
+
+    // Convert coordinates from stream space to client display space
+    const left = box.x * scale - offsetX;
+    const top = box.y * scale - offsetY;
+    const width = box.width * scale;
+    const height = box.height * scale;
+
+    return {
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${width}px`,
+      height: `${height}px`,
+    };
   };
 
   const updateStudentStatus = (studentId: string, status: "present" | "absent" | "late") => {
@@ -468,6 +627,16 @@ export default function TakeAttendance() {
         .from("classes")
         .update({ status: "completed" })
         .eq("id", selectedClass);
+
+      // Trigger notifications and parent alerts
+      const currentClassInfo = todaysClasses.find(c => c.id === selectedClass);
+      triggerAttendanceAlerts({
+        subjectName: currentClassInfo?.subject_name || "Unknown Subject",
+        subjectCode: currentClassInfo?.subject_code || "N/A",
+        teacherPhone: user?.phone || user?.user_metadata?.phone_number || undefined,
+        detectedStudents: detectedStudents,
+        allStudentsInClass: allStudents,
+      });
 
       toast({
         title: "Attendance Submitted",
@@ -633,7 +802,7 @@ export default function TakeAttendance() {
 
                 {/* Video Preview */}
                 <div className="relative aspect-video bg-muted rounded-lg overflow-hidden">
-                  {isCameraActive ? (
+                   {isCameraActive ? (
                     <>
                       <video
                         ref={videoRef}
@@ -642,6 +811,47 @@ export default function TakeAttendance() {
                         muted
                         className="w-full h-full object-cover"
                       />
+
+                      {/* Bounding Boxes Overlay */}
+                      {frameDimensions && overlayFaces.length > 0 && (
+                        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                          {overlayFaces.map((face) => {
+                            const styles = getBoundingBoxStyles(face.boundingBox);
+                            if (!styles) return null;
+
+                            return (
+                              <div
+                                key={face.id}
+                                className={`absolute border-2 rounded-sm transition-all duration-200 ${
+                                  face.status === "spoof"
+                                    ? "border-red-600 shadow-[0_0_12px_rgba(220,38,38,0.8)] animate-pulse"
+                                    : face.status === "unknown"
+                                    ? "border-amber-500/80 shadow-[0_0_8px_rgba(245,158,11,0.5)]"
+                                    : "border-sky-500 shadow-[0_0_10px_rgba(14,165,233,0.6)]"
+                                }`}
+                                style={styles}
+                              >
+                                {/* Bounding Box Label */}
+                                <div
+                                  className={`absolute bottom-full left-0 px-2 py-0.5 rounded-t text-[10px] sm:text-xs font-semibold text-white whitespace-nowrap shadow-md ${
+                                    face.status === "spoof"
+                                      ? "bg-red-600/95"
+                                      : face.status === "unknown"
+                                      ? "bg-amber-600/90"
+                                      : "bg-sky-600/90 border-b border-sky-400/20"
+                                  }`}
+                                >
+                                  {face.status === "spoof"
+                                    ? "⚠️ SPOOF DETECTED"
+                                    : face.status === "unknown"
+                                    ? "Unknown"
+                                    : `${face.name} | Present`}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
 
                       {/* Last recognition status (helps diagnose: no detection vs no match) */}
                       {lastRecognition && (

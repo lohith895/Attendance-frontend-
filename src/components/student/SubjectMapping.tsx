@@ -45,37 +45,20 @@ export function SubjectMapping() {
       }
       setStudentId(student.id);
 
-      // Get section info to find department
+      // Get section info to display section name
       const { data: section } = await supabase
         .from("sections")
-        .select("year_id, years(department_id)")
+        .select("name")
         .eq("id", student.section_id)
         .maybeSingle();
 
-      const deptId = (section as any)?.years?.department_id;
-      if (!deptId) { setLoading(false); return; }
+      const sectionName = section?.name || "";
 
-      // Get all sections in the same department
-      const { data: allYears } = await supabase
-        .from("years")
-        .select("id")
-        .eq("department_id", deptId);
-
-      const yearIds = (allYears || []).map(y => y.id);
-
-      const { data: allSections } = await supabase
-        .from("sections")
-        .select("id, name")
-        .in("year_id", yearIds);
-
-      const sectionIds = (allSections || []).map(s => s.id);
-      const sectionMap = Object.fromEntries((allSections || []).map(s => [s.id, s.name]));
-
-      // Get all subjects in those sections
+      // Get all subjects in the student's section
       const { data: allSubjects } = await supabase
         .from("subjects")
         .select("id, name, code, section_id, teacher_id")
-        .in("section_id", sectionIds)
+        .eq("section_id", student.section_id)
         .order("name");
 
       // Get teacher names
@@ -102,7 +85,7 @@ export function SubjectMapping() {
         name: s.name,
         code: s.code,
         teacherName: s.teacher_id ? (teacherMap[s.teacher_id] || "Unknown") : null,
-        sectionName: sectionMap[s.section_id] || "",
+        sectionName: sectionName,
         mapped: mappedIds.has(s.id),
       })));
     } catch (err) {

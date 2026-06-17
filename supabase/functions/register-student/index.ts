@@ -104,6 +104,8 @@ Deno.serve(async (req) => {
         .single();
 
       if (studentError) {
+        // Roll back the auth user so the next attempt doesn't get "email already registered"
+        await supabase.auth.admin.deleteUser(newUserId);
         return new Response(
           JSON.stringify({ error: studentError.message }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }

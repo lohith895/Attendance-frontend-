@@ -1,4 +1,4 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { APP_SHORT_TITLE } from "@/lib/appConfig";
@@ -28,8 +28,15 @@ import {
   Building2,
   Calendar,
   ChevronRight,
+  Bell,
 } from "lucide-react";
 import { CollegeHeader } from "@/components/layout/CollegeHeader";
+import {
+  getNotifications,
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+  AppNotification,
+} from "@/services/notificationService";
 
 interface NavItem {
   label: string;
@@ -64,10 +71,35 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
-  const filteredNavItems = navItems.filter(
-    (item) => !item.roles || (role && item.roles.includes(role))
-  );
+  const fetchAndFilterNotifications = () => {
+    const all = getNotifications();
+    if (role === "student" && user) {
+      setNotifications(
+        all.filter(
+          (n) =>
+            n.recipient === "student" &&
+            (n.userId === user.id || n.contactInfo?.toLowerCase() === user.email?.toLowerCase())
+        )
+      );
+    } else {
+      setNotifications(all);
+    }
+  };
+
+  useEffect(() => {
+    fetchAndFilterNotifications();
+
+    const handleNewNotif = () => {
+      fetchAndFilterNotifications();
+    };
+
+    window.addEventListener("new_notification", handleNewNotif);
+    return () => {
+      window.removeEventListener("new_notification", handleNewNotif);
+    };
+  }, [user, role]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -78,6 +110,86 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     if (!email) return "U";
     return email.charAt(0).toUpperCase();
   };
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const filteredNavItems = navItems.filter(
+    (item) => !item.roles || (role && item.roles.includes(role))
+  );
+
+  const renderNotificationsDropdown = () => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="relative text-foreground hover:bg-secondary">
+          <Bell className="h-5 w-5" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-[10px] font-bold text-white flex items-center justify-center animate-pulse">
+              {unreadCount}
+            </span>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80 sm:w-96 p-0 z-50">
+        <div className="p-4 border-b flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Notifications</h3>
+          {unreadCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs h-7 text-accent hover:text-accent p-0"
+              onClick={markAllNotificationsAsRead}
+            >
+              Mark all as read
+            </Button>
+          )}
+        </div>
+        <div className="max-h-80 overflow-y-auto">
+          {notifications.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">
+              No notifications yet
+            </div>
+          ) : (
+            notifications.map((notif) => (
+              <DropdownMenuItem
+                key={notif.id}
+                className={cn(
+                  "p-4 border-b flex flex-col items-start gap-1 cursor-pointer transition-colors focus:bg-secondary text-left w-full",
+                  !notif.read && "bg-accent/5"
+                )}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  markNotificationAsRead(notif.id);
+                }}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span
+                    className={cn(
+                      "text-[10px] px-2 py-0.5 rounded-full font-medium capitalize",
+                      notif.type === "warning" && "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
+                      notif.type === "sms" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
+                      notif.type === "attendance" && "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+                      notif.type === "email" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400"
+                    )}
+                  >
+                    {notif.type === "sms" ? "Parent SMS" : notif.type === "email" ? "Student Email" : notif.type}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {new Date(notif.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <p className={cn("text-xs font-semibold mt-1", !notif.read ? "text-foreground font-bold" : "text-muted-foreground")}>
+                  {notif.title}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-snug break-words w-full">
+                  {notif.message}
+                </p>
+              </DropdownMenuItem>
+            ))
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -214,13 +326,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             {APP_SHORT_TITLE}
           </h1>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-        >
-          {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </Button>
+        <div className="flex items-center gap-2">
+          {renderNotificationsDropdown()}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </Button>
+        </div>
       </div>
 
       {/* Mobile Menu */}
@@ -264,9 +379,18 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       </AnimatePresence>
 
       {/* Main Content */}
-      <main className="flex-1 lg:pt-0 pt-16 overflow-auto">
+      <main className="flex-1 lg:pt-0 pt-16 overflow-auto flex flex-col">
         <CollegeHeader showSubtitle={false} />
-        <div className="p-6 lg:p-8">{children}</div>
+        
+        {/* Navigation Toolbar */}
+        <div className="px-6 lg:px-8 py-3 bg-card border-b border-border/40 flex items-center justify-end gap-4 shadow-sm">
+          <span className="text-xs text-muted-foreground mr-auto hidden sm:inline capitalize">
+            Logged in as {role}: <span className="font-semibold">{user?.email}</span>
+          </span>
+          {renderNotificationsDropdown()}
+        </div>
+
+        <div className="p-6 lg:p-8 flex-1">{children}</div>
       </main>
     </div>
   );
